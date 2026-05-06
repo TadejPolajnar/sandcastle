@@ -228,6 +228,7 @@ export interface BacklogManagerEntry {
     readonly VIEW_TASK_COMMAND: string;
     readonly CLOSE_TASK_COMMAND: string;
     readonly BACKLOG_MANAGER_TOOLS: string;
+    readonly CLOSES_LINE: string;
   };
   /** Lines to append to `.env.example` for this backlog manager, or empty string if none needed. */
   readonly envExample: string;
@@ -264,6 +265,7 @@ const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
       BACKLOG_MANAGER_TOOLS: GITHUB_CLI_TOOLS,
+      CLOSES_LINE: "Closes #{{ISSUE_ID}}\\n\\n",
     },
     envExample: `# GitHub personal access token
 GH_TOKEN=`,
@@ -276,6 +278,7 @@ GH_TOKEN=`,
       VIEW_TASK_COMMAND: "bd show <ID>",
       CLOSE_TASK_COMMAND: `bd close <ID> "Completed by Sandcastle"`,
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
+      CLOSES_LINE: "",
     },
     envExample: "",
   },
@@ -291,6 +294,37 @@ export const getBacklogManager = (
 
 export const getAgent = (name: string): AgentEntry | undefined =>
   AGENT_REGISTRY.find((a) => a.name === name);
+
+// ---------------------------------------------------------------------------
+// Merge strategy registry (internal — not part of public API)
+// ---------------------------------------------------------------------------
+
+export interface MergeStrategyEntry {
+  readonly name: string;
+  readonly label: string;
+  readonly templateArgs: Readonly<Record<string, string>>;
+}
+
+const MERGE_STRATEGY_REGISTRY: MergeStrategyEntry[] = [
+  {
+    name: "merge-to-head",
+    label: "Merge to HEAD",
+    templateArgs: {},
+  },
+  {
+    name: "pull-request",
+    label: "Pull Request (GitHub)",
+    templateArgs: {},
+  },
+];
+
+export const listMergeStrategies = (): MergeStrategyEntry[] =>
+  MERGE_STRATEGY_REGISTRY;
+
+export const getMergeStrategy = (
+  name: string,
+): MergeStrategyEntry | undefined =>
+  MERGE_STRATEGY_REGISTRY.find((s) => s.name === name);
 
 // ---------------------------------------------------------------------------
 // Sandbox provider registry (internal — not part of public API)
@@ -335,6 +369,7 @@ export const getSandboxProvider = (
 export function getNextStepsLines(
   template: string,
   mainFilename: string,
+  mergeStrategy?: string,
 ): string[] {
   if (template === "blank") {
     return [
@@ -360,6 +395,11 @@ export function getNextStepsLines(
     if (hasReviewer) {
       lines.push(
         `${step++}. Customize .sandcastle/CODING_STANDARDS.md with your project's standards — the reviewer agent loads it during review`,
+      );
+    }
+    if (mergeStrategy === "pull-request") {
+      lines.push(
+        `${step++}. Run \`gh auth login\` if you haven't already (PR mode requires it on the host)`,
       );
     }
     lines.push(`${step++}. Run \`npm run sandcastle\` to start the agent`);
@@ -401,30 +441,69 @@ const COMPILED_FILE_EXTENSIONS = [
   ".d.mts.map",
 ];
 
+const MERGE_STRATEGY_VARIANT_SUFFIXES = [
+  ".merge-to-head",
+  ".pull-request",
+] as const;
+
+const MAIN_BASENAMES = new Set(["main.mts", "main.ts"]);
+
 const copyTemplateFiles = (
   templateDir: string,
   destDir: string,
   mainFilename: string,
+  mergeStrategy: MergeStrategyEntry,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const files = yield* fs
       .readDirectory(templateDir)
       .pipe(Effect.mapError((e) => new Error(e.message)));
+
+    const isCompiledArtifact = (f: string): boolean =>
+      COMPILED_FILE_EXTENSIONS.some((ext) => f.endsWith(ext));
+
+    const selectedSuffix = `.${mergeStrategy.name}`;
+
+    type CopyOp = { src: string; destName: string };
+    const copyOps: CopyOp[] = [];
+
+    for (const f of files) {
+      if (f === "template.json" || f === ".env.example") continue;
+      if (isCompiledArtifact(f)) continue;
+
+      const variantSuffix = MERGE_STRATEGY_VARIANT_SUFFIXES.find((s) =>
+        f.endsWith(s),
+      );
+
+      if (variantSuffix !== undefined) {
+        if (variantSuffix !== selectedSuffix) continue;
+        const baseName = f.slice(0, -variantSuffix.length);
+        if (
+          baseName === "" ||
+          MERGE_STRATEGY_VARIANT_SUFFIXES.some((s) => baseName.endsWith(s))
+        ) {
+          yield* Effect.fail(
+            new Error(
+              `Template contains malformed merge-strategy variant filename: "${f}"`,
+            ),
+          );
+        }
+        const destName = MAIN_BASENAMES.has(baseName) ? mainFilename : baseName;
+        copyOps.push({ src: f, destName });
+        continue;
+      }
+
+      const destName = f === "main.mts" ? mainFilename : f;
+      copyOps.push({ src: f, destName });
+    }
+
     yield* Effect.all(
-      files
-        .filter(
-          (f) =>
-            f !== "template.json" &&
-            f !== ".env.example" &&
-            !COMPILED_FILE_EXTENSIONS.some((ext) => f.endsWith(ext)),
-        )
-        .map((f) => {
-          const destName = f === "main.mts" ? mainFilename : f;
-          return fs
-            .copyFile(join(templateDir, f), join(destDir, destName))
-            .pipe(Effect.mapError((e) => new Error(e.message)));
-        }),
+      copyOps.map((op) =>
+        fs
+          .copyFile(join(templateDir, op.src), join(destDir, op.destName))
+          .pipe(Effect.mapError((e) => new Error(e.message))),
+      ),
       { concurrency: "unbounded" },
     );
   });
@@ -585,6 +664,7 @@ export interface ScaffoldOptions {
   createLabel?: boolean;
   backlogManager?: BacklogManagerEntry;
   sandboxProvider?: SandboxProviderEntry;
+  mergeStrategy?: MergeStrategyEntry;
 }
 
 export interface ScaffoldResult {
@@ -628,6 +708,7 @@ export const scaffold = (
       createLabel = true,
       backlogManager = BACKLOG_MANAGER_REGISTRY[0]!, // default: github-issues
       sandboxProvider = SANDBOX_PROVIDER_REGISTRY[0]!, // default: docker
+      mergeStrategy = MERGE_STRATEGY_REGISTRY[0]!, // default: merge-to-head
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");
@@ -672,7 +753,7 @@ export const scaffold = (
         fs
           .writeFileString(join(configDir, ".env.example"), envExampleContent)
           .pipe(Effect.mapError((e) => new Error(e.message))),
-        copyTemplateFiles(templateDir, configDir, mainFilename),
+        copyTemplateFiles(templateDir, configDir, mainFilename, mergeStrategy),
       ],
       { concurrency: "unbounded" },
     );

@@ -22,6 +22,8 @@ import {
   getBacklogManager,
   listSandboxProviders,
   getSandboxProvider,
+  listMergeStrategies,
+  getMergeStrategy,
   getNextStepsLines,
 } from "./InitService.js";
 import { defaultImageName } from "./sandboxes/docker.js";
@@ -29,6 +31,7 @@ import type {
   AgentEntry,
   BacklogManagerEntry,
   SandboxProviderEntry,
+  MergeStrategyEntry,
 } from "./InitService.js";
 import { ConfigDirError, InitError } from "./errors.js";
 
@@ -89,6 +92,13 @@ const initModelOption = Options.text("model").pipe(
   Options.optional,
 );
 
+const mergeStrategyOption = Options.text("merge-strategy").pipe(
+  Options.withDescription(
+    "How completed branches land: 'merge-to-head' (default) merges to the host's current branch; 'pull-request' pushes and opens a PR via gh. Has no effect on the 'blank' template.",
+  ),
+  Options.optional,
+);
+
 const initCommand = Command.make(
   "init",
   {
@@ -96,12 +106,14 @@ const initCommand = Command.make(
     template: templateOption,
     agent: agentOption,
     model: initModelOption,
+    mergeStrategy: mergeStrategyOption,
   },
   ({
     imageName: imageNameFlag,
     template,
     agent: agentFlag,
     model: modelFlag,
+    mergeStrategy: mergeStrategyFlag,
   }) =>
     Effect.gen(function* () {
       const d = yield* Display;
@@ -117,6 +129,20 @@ const initCommand = Command.make(
           yield* Effect.fail(
             new InitError({
               message: `Unknown template "${template.value}". Available: ${names}`,
+            }),
+          );
+        }
+      }
+
+      if (mergeStrategyFlag._tag === "Some") {
+        const valid = getMergeStrategy(mergeStrategyFlag.value);
+        if (!valid) {
+          const names = listMergeStrategies()
+            .map((s) => s.name)
+            .join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown merge strategy "${mergeStrategyFlag.value}". Available: ${names}`,
             }),
           );
         }
@@ -233,6 +259,37 @@ const initCommand = Command.make(
         selectedTemplate = selected as string;
       }
 
+      let selectedMergeStrategy: MergeStrategyEntry = listMergeStrategies()[0]!; // default: merge-to-head
+      if (selectedTemplate !== "blank") {
+        if (mergeStrategyFlag._tag === "Some") {
+          selectedMergeStrategy = getMergeStrategy(mergeStrategyFlag.value)!;
+        } else {
+          const mergeStrategies = listMergeStrategies();
+          const selected = yield* Effect.promise(() =>
+            clack.select({
+              message: "Select a merge strategy:",
+              initialValue: "merge-to-head",
+              options: mergeStrategies.map((s) => ({
+                value: s.name,
+                label: s.label,
+                hint:
+                  s.name === "pull-request"
+                    ? "Push branches and open PRs (requires gh ≥ 2.4 + auth on host)"
+                    : "Merge completed branches directly to HEAD",
+              })),
+            }),
+          );
+          if (clack.isCancel(selected)) {
+            yield* Effect.fail(
+              new InitError({
+                message: "Merge strategy selection cancelled.",
+              }),
+            );
+          }
+          selectedMergeStrategy = getMergeStrategy(selected as string)!;
+        }
+      }
+
       // Offer to create the "Sandcastle" label on the repo (skip for non-GitHub backlog managers)
       let shouldCreateLabel: boolean | symbol = false;
       if (selectedBacklogManager.name === "github-issues") {
@@ -265,6 +322,7 @@ const initCommand = Command.make(
           createLabel: shouldCreateLabel === true,
           backlogManager: selectedBacklogManager,
           sandboxProvider: selectedSandboxProvider,
+          mergeStrategy: selectedMergeStrategy,
         }).pipe(
           Effect.mapError(
             (e) =>
@@ -309,6 +367,7 @@ const initCommand = Command.make(
       const nextSteps = getNextStepsLines(
         selectedTemplate,
         scaffoldResult.mainFilename,
+        selectedMergeStrategy.name,
       );
       for (const [i, line] of nextSteps.entries()) {
         yield* d.text(i === 0 ? line : styleText("dim", line));

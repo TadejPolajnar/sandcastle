@@ -26,7 +26,13 @@
       "WebFetch(domain:www.daytona.io)",
       "WebFetch(domain:www.npmjs.com)",
       "Bash(git diff:*)",
-      "WebFetch(domain:vercel.com)"
+      "WebFetch(domain:vercel.com)",
+      "Skill(review-code)",
+      "Bash(npx tsx:*)",
+      "Bash(gh api:*)",
+      "Bash(git push:*)",
+      "Bash(git rebase:*)",
+      "Bash(GIT_SEQUENCE_EDITOR=true git rebase --continue)"
     ]
   }
 }

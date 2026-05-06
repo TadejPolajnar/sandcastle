@@ -14,6 +14,8 @@ import {
   getBacklogManager,
   listSandboxProviders,
   getSandboxProvider,
+  listMergeStrategies,
+  getMergeStrategy,
 } from "./InitService.js";
 import type { AgentEntry, ScaffoldOptions } from "./InitService.js";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
@@ -1166,6 +1168,11 @@ describe("InitService scaffold", () => {
         "GitHub CLI",
       );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("gh");
+      // PR-mode auto-close keyword for GitHub. The inner {{ISSUE_ID}} is
+      // filled in by the scaffolded main.mts.pull-request at runtime.
+      expect(manager!.templateArgs.CLOSES_LINE).toBe(
+        "Closes #{{ISSUE_ID}}\n\n",
+      );
     });
 
     it("getBacklogManager returns beads entry with expected templateArgs", () => {
@@ -1187,10 +1194,131 @@ describe("InitService scaffold", () => {
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
         "dpkg-architecture -qDEB_HOST_MULTIARCH",
       );
+      // No GitHub auto-close keyword for non-GitHub trackers.
+      expect(manager!.templateArgs.CLOSES_LINE).toBe("");
     });
 
     it("getBacklogManager returns undefined for unknown manager", () => {
       expect(getBacklogManager("nonexistent")).toBeUndefined();
+    });
+  });
+
+  describe("Merge strategy registry", () => {
+    it("listMergeStrategies returns merge-to-head and pull-request", () => {
+      const strategies = listMergeStrategies();
+      expect(strategies.some((s) => s.name === "merge-to-head")).toBe(true);
+      expect(strategies.some((s) => s.name === "pull-request")).toBe(true);
+    });
+
+    it("listMergeStrategies returns merge-to-head first (the default)", () => {
+      const strategies = listMergeStrategies();
+      expect(strategies[0]!.name).toBe("merge-to-head");
+    });
+
+    it("getMergeStrategy returns merge-to-head with expected fields", () => {
+      const strategy = getMergeStrategy("merge-to-head");
+      expect(strategy).toBeDefined();
+      expect(strategy!.name).toBe("merge-to-head");
+      expect(strategy!.label).toBe("Merge to HEAD");
+      expect(strategy!.templateArgs).toEqual({});
+    });
+
+    it("getMergeStrategy returns pull-request with expected fields", () => {
+      const strategy = getMergeStrategy("pull-request");
+      expect(strategy).toBeDefined();
+      expect(strategy!.name).toBe("pull-request");
+      expect(strategy!.label).toBe("Pull Request (GitHub)");
+      expect(strategy!.templateArgs).toEqual({});
+    });
+
+    it("getMergeStrategy returns undefined for unknown strategy", () => {
+      expect(getMergeStrategy("nonexistent")).toBeUndefined();
+      expect(getMergeStrategy("")).toBeUndefined();
+    });
+  });
+
+  describe("Merge strategy plumbing", () => {
+    // Phase 1 only validates that mergeStrategy threads through scaffold
+    // without changing existing template output. Variant-file behavior is
+    // covered by Phase 2 once the templates ship variant files.
+
+    it("scaffold accepts mergeStrategy without affecting blank template output", async () => {
+      const dirA = await makeDir();
+      const dirB = await makeDir();
+      await runScaffold(dirA);
+      await runScaffold(dirB, {
+        mergeStrategy: getMergeStrategy("pull-request"),
+      });
+      const promptA = await readFile(
+        join(dirA, ".sandcastle", "prompt.md"),
+        "utf-8",
+      );
+      const promptB = await readFile(
+        join(dirB, ".sandcastle", "prompt.md"),
+        "utf-8",
+      );
+      expect(promptA).toBe(promptB);
+    });
+
+    it("scaffold defaults to merge-to-head when mergeStrategy is omitted", async () => {
+      const dirA = await makeDir();
+      const dirB = await makeDir();
+      await runScaffold(dirA, { templateName: "simple-loop" });
+      await runScaffold(dirB, {
+        templateName: "simple-loop",
+        mergeStrategy: getMergeStrategy("merge-to-head"),
+      });
+      // Compare main.mts output: implicit default must equal explicit
+      // merge-to-head selection.
+      const mainA = await readFile(
+        join(dirA, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      const mainB = await readFile(
+        join(dirB, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainA).toBe(mainB);
+    });
+
+    it("scaffold with pull-request strategy succeeds for templates with no variant files", async () => {
+      // Phase 1: no template ships variant files yet, so pull-request mode
+      // should produce identical output to merge-to-head. This test pins that
+      // invariant so Phase 2's variant additions are visible as a diff.
+      const dirA = await makeDir();
+      const dirB = await makeDir();
+      await runScaffold(dirA, {
+        templateName: "simple-loop",
+        mergeStrategy: getMergeStrategy("merge-to-head"),
+      });
+      await runScaffold(dirB, {
+        templateName: "simple-loop",
+        mergeStrategy: getMergeStrategy("pull-request"),
+      });
+      const mainA = await readFile(
+        join(dirA, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      const mainB = await readFile(
+        join(dirB, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainA).toBe(mainB);
+    });
+
+    it("scaffold under pull-request never leaves variant suffix files in the output", async () => {
+      // Defensive invariant: regardless of strategy, no .merge-to-head or
+      // .pull-request suffix should appear in the scaffolded directory.
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        mergeStrategy: getMergeStrategy("pull-request"),
+      });
+      const fs = await import("node:fs/promises");
+      const entries = await fs.readdir(join(dir, ".sandcastle"));
+      for (const entry of entries) {
+        expect(entry).not.toMatch(/\.(merge-to-head|pull-request)$/);
+      }
     });
   });
 
