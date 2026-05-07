@@ -484,6 +484,27 @@ For bind-mount providers (like Docker), the worktree directory is bind-mounted i
 
 From your point of view, you just configure `branchStrategy: { type: 'branch', branch: 'foo' }` on `run()`, and get a commit on branch `foo` once it's complete. All 100% local.
 
+### Merge strategies
+
+When you run `sandcastle init`, you choose a **merge strategy** that controls what happens to completed branches:
+
+- **Merge to HEAD** (default) — the existing behavior. Completed branches are merged directly into the host's current branch.
+- **Pull Request (GitHub)** — each completed branch is pushed to `origin` and a PR is opened via `gh pr create`. A short-lived PR-author agent writes the title and body; the host runs all `gh` and `git push` commands (the agent never shells out to `gh` or force-pushes).
+
+PR mode is idempotent: re-runs push to open PRs without duplicating them. Closed or merged PRs are skipped. Force-push is never attempted — a rejected push skips the branch with a warning.
+
+**Host requirements for PR mode:**
+
+- GitHub CLI `gh` ≥ 2.4 installed and authenticated (`gh auth login`)
+- An `origin` remote pointing to the GitHub repository
+- HEAD on a checked-out branch (not detached)
+
+**Limitations:**
+
+- Cross-repo and fork-based PRs are not supported (`origin` must be the upstream repo).
+- Branch protection rules (signed commits, required checks) are user-side concerns — Sandcastle does not bypass them.
+- In `simple-loop` PR mode, the loop locks to an open Sandcastle PR until it is merged or closed, even if higher-priority issues appear. Merge or close the PR to unlock.
+
 ## Prompts
 
 Sandcastle uses a flexible prompt system. You write the prompt, and the engine executes it — no opinions about workflow, task management, or context sources are imposed.

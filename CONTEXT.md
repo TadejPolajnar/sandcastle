@@ -76,6 +76,10 @@ _Avoid_: "base branch", "destination branch", "merge target"
 A pluggable implementation that builds commands and parses output for a specific **agent**, injected into `run()` via the `agent` option.
 _Avoid_: "agent adapter", "agent driver"
 
+**PR-author agent**:
+A short-lived agent invoked by the `pull-request` **merge strategy**'s `main.mts` to write a PR title and body inside structured `<pr-title>` / `<pr-body>` tags. It does not run `gh`, `git push`, or any branch-mutating command — the host runs `gh pr create` after parsing the output.
+_Avoid_: "PR agent" (too generic), "Merger" (that's the merge-to-head agent)
+
 ### Execution
 
 **Agent invoker**:
@@ -159,6 +163,10 @@ _Avoid_: "placeholder", "variable"
 **Template argument substitution**:
 The preprocessing step during **init** that replaces **template arguments** with their resolved values.
 _Avoid_: "template expansion", "interpolation"
+
+**Merge strategy**:
+An **init**-time choice that controls what happens to completed branches: `merge-to-head` (default — merge into HOST's current branch) or `pull-request` (push to `origin` and open a GitHub PR via the host). Selected alongside **backlog manager** and template during `sandcastle init`.
+_Avoid_: "PR strategy", "merge mode"
 
 ### Infrastructure
 
